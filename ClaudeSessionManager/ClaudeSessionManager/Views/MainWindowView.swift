@@ -7,9 +7,11 @@ struct MainWindowView: View {
     @State private var renameText: String = ""
     @State private var showRename = false
     @State private var confirmTrash = false
+    @State private var confirmActiveTrash = false
     @State private var pendingTrashIDs: [String] = []
     @State private var confirmProjectTrash = false
-    @State private var pendingProjectName: String?
+    @State private var confirmActiveProjectTrash = false
+    @State private var pendingProject: ProjectGroup?
 
     var body: some View {
         NavigationSplitView {
@@ -41,9 +43,14 @@ struct MainWindowView: View {
             isPresented: $confirmTrash,
             titleVisibility: .visible
         ) {
-            Button("移入回收站", role: .destructive) {
+            Button(activeCount(in: pendingTrashIDs) > 0 ? "仅删除非活跃会话" : "移入回收站", role: .destructive) {
                 appState.moveToTrash(ids: pendingTrashIDs)
                 pendingTrashIDs = []
+            }
+            if activeCount(in: pendingTrashIDs) > 0 {
+                Button("继续确认删除活跃会话…", role: .destructive) {
+                    DispatchQueue.main.async { confirmActiveTrash = true }
+                }
             }
             Button("取消", role: .cancel) {
                 pendingTrashIDs = []
@@ -52,28 +59,62 @@ struct MainWindowView: View {
             let size = pendingTrashIDs
                 .compactMap { id in appState.sessions.first { $0.id == id }?.byteSize }
                 .reduce(Int64(0), +)
-            Text("将把 \(pendingTrashIDs.count) 个会话移入回收站（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）。可在 \(settingsStore.settings.trashRetentionDays) 天内恢复。")
+            let active = activeCount(in: pendingTrashIDs)
+            Text("将处理 \(pendingTrashIDs.count) 个会话（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）。\(active > 0 ? "其中 \(active) 个在最近 2 分钟内仍有活动，默认会跳过。" : "")可在 \(settingsStore.settings.trashRetentionDays) 天内恢复。")
+        }
+        .confirmationDialog(
+            "确认删除活跃会话？",
+            isPresented: $confirmActiveTrash,
+            titleVisibility: .visible
+        ) {
+            Button("仍然移入回收站", role: .destructive) {
+                appState.moveToTrash(ids: pendingTrashIDs, allowRecentlyActive: true)
+                pendingTrashIDs = []
+            }
+            Button("取消", role: .cancel) { pendingTrashIDs = [] }
+        } message: {
+            Text("有 \(activeCount(in: pendingTrashIDs)) 个会话可能仍被 Claude 写入。强制移动可能中断当前会话，请确认 Claude 已停止使用这些会话。")
         }
         .confirmationDialog(
             projectTrashTitle,
             isPresented: $confirmProjectTrash,
             titleVisibility: .visible
         ) {
-            Button("删除该项目全部会话", role: .destructive) {
-                if let name = pendingProjectName {
-                    appState.moveProjectToTrash(projectName: name)
+            Button(projectActiveCount > 0 ? "仅删除非活跃会话" : "删除该项目全部会话", role: .destructive) {
+                if let project = pendingProject {
+                    appState.moveProjectToTrash(projectID: project.id)
                 }
-                pendingProjectName = nil
+                pendingProject = nil
+            }
+            if projectActiveCount > 0 {
+                Button("继续确认删除活跃会话…", role: .destructive) {
+                    DispatchQueue.main.async { confirmActiveProjectTrash = true }
+                }
             }
             Button("取消", role: .cancel) {
-                pendingProjectName = nil
+                pendingProject = nil
             }
         } message: {
-            if let name = pendingProjectName {
-                let count = appState.sessionCount(inProject: name)
-                let size = appState.byteSize(inProject: name)
-                Text("项目「\(name)」共 \(count) 个会话（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）将移入回收站，可在 \(settingsStore.settings.trashRetentionDays) 天内恢复。不会删除项目源码目录。")
+            if let project = pendingProject {
+                let count = appState.sessionCount(inProject: project.id)
+                let size = appState.byteSize(inProject: project.id)
+                Text("项目「\(project.name)」共 \(count) 个会话（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）。\(projectActiveCount > 0 ? "其中 \(projectActiveCount) 个最近仍有活动，默认会跳过。" : "")只处理 \(PathDetector.abbreviate(project.path)) 下的会话，不会删除项目源码。")
             }
+        }
+        .confirmationDialog(
+            "确认删除项目中的活跃会话？",
+            isPresented: $confirmActiveProjectTrash,
+            titleVisibility: .visible
+        ) {
+            Button("仍然删除全部会话", role: .destructive) {
+                if let project = pendingProject {
+                    appState.moveProjectToTrash(projectID: project.id, allowRecentlyActive: true)
+                }
+                pendingProject = nil
+            }
+            Button("取消", role: .cancel) { pendingProject = nil }
+        } message: {
+            Text("该项目有 \(projectActiveCount) 个会话可能仍被 Claude 写入。强制移动可能中断当前会话。")
         }
         .onAppear {
             if appState.sessions.isEmpty && !appState.isScanning {
@@ -83,10 +124,20 @@ struct MainWindowView: View {
     }
 
     private var projectTrashTitle: String {
-        if let name = pendingProjectName {
-            return "删除项目「\(name)」的全部会话？"
+        if let project = pendingProject {
+            return "删除项目「\(project.name)」的全部会话？"
         }
         return "删除项目全部会话？"
+    }
+
+    private var projectActiveCount: Int {
+        guard let project = pendingProject else { return 0 }
+        return appState.sessions(inProject: project.id).filter(\.isRecentlyActive).count
+    }
+
+    private func activeCount(in ids: [String]) -> Int {
+        let idSet = Set(ids)
+        return appState.sessions.filter { idSet.contains($0.id) && $0.isRecentlyActive }.count
     }
 
     // MARK: - Sidebar
@@ -119,16 +170,17 @@ struct MainWindowView: View {
                     if appState.filter == .trash { appState.filter = .all }
                 }
 
-                ForEach(appState.projectNames, id: \.self) { name in
-                    let count = appState.sessionCount(inProject: name)
+                ForEach(appState.projectGroups) { project in
+                    let count = appState.sessionCount(inProject: project.id)
                     sidebarRow(
-                        title: name,
+                        title: project.name,
+                        subtitle: PathDetector.abbreviate(project.path),
                         systemImage: "folder.fill",
-                        selected: appState.projectFilter == name,
+                        selected: appState.projectFilter == project.id,
                         trailing: "\(count)",
-                        contextMenu: { projectContextMenu(for: name) }
+                        contextMenu: { projectContextMenu(for: project) }
                     ) {
-                        appState.projectFilter = name
+                        appState.projectFilter = project.id
                         if appState.filter == .trash { appState.filter = .all }
                     }
                 }
@@ -138,40 +190,40 @@ struct MainWindowView: View {
     }
 
     @ViewBuilder
-    private func projectContextMenu(for name: String) -> some View {
-        let count = appState.sessionCount(inProject: name)
-        let size = appState.byteSize(inProject: name)
-        let archivedCount = appState.sessions(inProject: name).filter(\.isArchived).count
+    private func projectContextMenu(for project: ProjectGroup) -> some View {
+        let count = appState.sessionCount(inProject: project.id)
+        let size = appState.byteSize(inProject: project.id)
+        let archivedCount = appState.sessions(inProject: project.id).filter(\.isArchived).count
         let activeCount = count - archivedCount
 
         Button("查看该项目会话") {
-            appState.projectFilter = name
+            appState.projectFilter = project.id
             if appState.filter == .trash { appState.filter = .all }
         }
         Button("在 Finder 中打开项目目录") {
-            appState.revealProjectFolder(projectName: name)
+            appState.revealProjectFolder(projectID: project.id)
         }
         Divider()
         Menu("导出该项目全部会话") {
-            Button("Markdown") { appState.exportProject(projectName: name, format: .markdown) }
-            Button("JSON") { appState.exportProject(projectName: name, format: .json) }
-            Button("Zip 打包") { appState.exportProject(projectName: name, format: .zipBundle) }
+            Button("Markdown") { appState.exportProject(projectID: project.id, format: .markdown) }
+            Button("JSON") { appState.exportProject(projectID: project.id, format: .json) }
+            Button("Zip 打包") { appState.exportProject(projectID: project.id, format: .zipBundle) }
         }
         .disabled(count == 0)
         Divider()
         if activeCount > 0 {
             Button("归档该项目全部会话（\(activeCount)）") {
-                appState.setArchived(projectName: name, archived: true)
+                appState.setArchived(projectID: project.id, archived: true)
             }
         }
         if archivedCount > 0 {
             Button("取消归档该项目会话（\(archivedCount)）") {
-                appState.setArchived(projectName: name, archived: false)
+                appState.setArchived(projectID: project.id, archived: false)
             }
         }
         Divider()
         Button("删除该项目全部会话（\(count) · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）", role: .destructive) {
-            pendingProjectName = name
+            pendingProject = project
             confirmProjectTrash = true
         }
         .disabled(count == 0)
@@ -179,6 +231,7 @@ struct MainWindowView: View {
 
     private func sidebarRow<MenuContent: View>(
         title: String,
+        subtitle: String? = nil,
         systemImage: String,
         selected: Bool,
         trailing: String? = nil,
@@ -190,9 +243,18 @@ struct MainWindowView: View {
                 Image(systemName: systemImage)
                     .frame(width: 16)
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
-                Text(title)
-                    .lineLimit(1)
-                    .foregroundStyle(selected ? Color.primary : Color.primary.opacity(0.9))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .lineLimit(1)
+                        .foregroundStyle(selected ? Color.primary : Color.primary.opacity(0.9))
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 4)
                 if let trailing {
                     Text(trailing)

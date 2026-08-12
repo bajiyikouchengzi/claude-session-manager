@@ -336,7 +336,9 @@ enum SessionScanner {
         }
         info.messageCount = userCount + assistantCount
         info.createdAt = firstTs
-        if let lastTs { info.lastActivityAt = lastTs }
+        if let lastTs {
+            info.lastActivityAt = max(info.lastActivityAt ?? .distantPast, lastTs)
+        }
         if let customTitle, !customTitle.isEmpty {
             info.inferredTitle = customTitle
         } else if let firstUser {

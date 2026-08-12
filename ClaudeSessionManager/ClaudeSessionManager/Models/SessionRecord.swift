@@ -57,6 +57,20 @@ struct SessionRecord: Identifiable, Hashable, Codable {
         guard let lastActivityAt else { return false }
         return Date().timeIntervalSince(lastActivityAt) < 120
     }
+
+    /// Stable project identity. Display names are not unique, so project-wide
+    /// operations must always use the normalized full working directory.
+    var projectID: String? {
+        guard let cwd, !cwd.isEmpty else { return nil }
+        return URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.path
+    }
+}
+
+struct ProjectGroup: Identifiable, Hashable {
+    let id: String
+    let name: String
+
+    var path: String { id }
 }
 
 enum SessionSort: String, CaseIterable, Identifiable {

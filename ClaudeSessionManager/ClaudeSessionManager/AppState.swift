@@ -59,9 +59,19 @@ final class AppState: ObservableObject {
         return []
     }
 
-    var projectNames: [String] {
-        let names = sessions.compactMap(\.projectName).filter { !$0.isEmpty }
-        return Array(Set(names)).sorted()
+    var projectGroups: [ProjectGroup] {
+        var groups: [String: ProjectGroup] = [:]
+        for session in sessions {
+            guard let id = session.projectID else { continue }
+            let name = session.projectName?.isEmpty == false
+                ? session.projectName!
+                : URL(fileURLWithPath: id).lastPathComponent
+            groups[id] = ProjectGroup(id: id, name: name)
+        }
+        return groups.values.sorted {
+            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return order == .orderedSame ? $0.path < $1.path : order == .orderedAscending
+        }
     }
 
     func selectOnly(_ id: String) {
@@ -116,7 +126,7 @@ final class AppState: ObservableObject {
         }
 
         if let projectFilter, !projectFilter.isEmpty {
-            list = list.filter { $0.projectName == projectFilter }
+            list = list.filter { $0.projectID == projectFilter }
         }
 
         if let searchIDs {
@@ -220,28 +230,38 @@ final class AppState: ObservableObject {
         overlayStore.update(sessionID) { $0.isFavorite = value }
     }
 
-    func moveToTrash(ids: [String]) {
+    func moveToTrash(ids: [String], allowRecentlyActive: Bool = false) {
         var freed: Int64 = 0
+        var movedCount = 0
+        var skippedActive = 0
+        var failures: [String] = []
         for id in ids {
             guard let idx = sessions.firstIndex(where: { $0.id == id }) else { continue }
             let session = sessions[idx]
-            if session.isRecentlyActive {
-                // Still allow, but note.
-                statusMessage = "注意：\(session.displayTitle) 可能仍在活动"
+            if session.isRecentlyActive && !allowRecentlyActive {
+                skippedActive += 1
+                continue
             }
             do {
                 _ = try trashService.moveToTrash(session)
                 freed += session.byteSize
+                movedCount += 1
                 sessions.remove(at: idx)
                 indexStore.delete(id: id)
                 selectedIDs.remove(id)
                 if selectedID == id { selectedID = selectedIDs.first }
             } catch {
-                statusMessage = "移入回收站失败: \(error.localizedDescription)"
+                failures.append("\(session.displayTitle): \(error.localizedDescription)")
             }
         }
         trashed = trashService.list()
-        statusMessage = "已移入回收站 \(ids.count) 项 · 约 \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))"
+        var parts: [String] = []
+        if movedCount > 0 {
+            parts.append("已移入回收站 \(movedCount) 项 · 约 \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+        }
+        if skippedActive > 0 { parts.append("已跳过活跃会话 \(skippedActive) 项") }
+        if !failures.isEmpty { parts.append("失败 \(failures.count) 项：\(failures.joined(separator: "；"))") }
+        statusMessage = parts.isEmpty ? "没有可删除的会话" : parts.joined(separator: "；")
     }
 
     func exportSelection(format: ExportFormat) {
@@ -267,61 +287,64 @@ final class AppState: ObservableObject {
         Array(sessions.sorted { $0.byteSize > $1.byteSize }.prefix(limit))
     }
 
-    func sessions(inProject projectName: String) -> [SessionRecord] {
-        sessions.filter { $0.projectName == projectName }
+    func sessions(inProject projectID: String) -> [SessionRecord] {
+        sessions.filter { $0.projectID == projectID }
     }
 
-    func sessionCount(inProject projectName: String) -> Int {
-        sessions(inProject: projectName).count
+    func sessionCount(inProject projectID: String) -> Int {
+        sessions(inProject: projectID).count
     }
 
-    func byteSize(inProject projectName: String) -> Int64 {
-        sessions(inProject: projectName).reduce(0) { $0 + $1.byteSize }
+    func byteSize(inProject projectID: String) -> Int64 {
+        sessions(inProject: projectID).reduce(0) { $0 + $1.byteSize }
     }
 
-    /// Archive / unarchive every session that belongs to a project folder name.
-    func setArchived(projectName: String, archived: Bool) {
-        let ids = sessions(inProject: projectName).map(\.id)
+    /// Archive / unarchive sessions for one exact normalized project path.
+    func setArchived(projectID: String, archived: Bool) {
+        let items = sessions(inProject: projectID)
+        let ids = items.map(\.id)
+        let name = items.first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
         guard !ids.isEmpty else {
-            statusMessage = "项目「\(projectName)」下没有会话"
+            statusMessage = "项目「\(name)」下没有会话"
             return
         }
         setArchived(ids: ids, archived: archived)
         statusMessage = archived
-            ? "已归档项目「\(projectName)」的 \(ids.count) 个会话"
-            : "已取消归档项目「\(projectName)」的 \(ids.count) 个会话"
+            ? "已归档项目「\(name)」的 \(ids.count) 个会话"
+            : "已取消归档项目「\(name)」的 \(ids.count) 个会话"
     }
 
     /// Move every session in a project into the app trash.
-    func moveProjectToTrash(projectName: String) {
-        let ids = sessions(inProject: projectName).map(\.id)
+    func moveProjectToTrash(projectID: String, allowRecentlyActive: Bool = false) {
+        let items = sessions(inProject: projectID)
+        let ids = items.map(\.id)
+        let name = items.first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
         guard !ids.isEmpty else {
-            statusMessage = "项目「\(projectName)」下没有会话"
+            statusMessage = "项目「\(name)」下没有会话"
             return
         }
-        moveToTrash(ids: ids)
-        if projectFilter == projectName {
+        moveToTrash(ids: ids, allowRecentlyActive: allowRecentlyActive)
+        if projectFilter == projectID && sessions(inProject: projectID).isEmpty {
             projectFilter = nil
         }
-        statusMessage = "已将项目「\(projectName)」的 \(ids.count) 个会话移入回收站"
     }
 
-    func exportProject(projectName: String, format: ExportFormat) {
-        let items = sessions(inProject: projectName)
+    func exportProject(projectID: String, format: ExportFormat) {
+        let items = sessions(inProject: projectID)
+        let name = items.first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
         guard !items.isEmpty else {
-            statusMessage = "项目「\(projectName)」下没有会话"
+            statusMessage = "项目「\(name)」下没有会话"
             return
         }
         export(sessions: items, format: format)
     }
 
-    func revealProjectFolder(projectName: String) {
-        // Prefer a live cwd from any session in that project.
-        if let cwd = sessions(inProject: projectName).compactMap(\.cwd).first {
-            NSWorkspace.shared.open(URL(fileURLWithPath: cwd))
+    func revealProjectFolder(projectID: String) {
+        guard FileManager.default.fileExists(atPath: projectID) else {
+            statusMessage = "找不到项目目录：\(PathDetector.abbreviate(projectID))"
             return
         }
-        statusMessage = "找不到项目「\(projectName)」的本地路径"
+        NSWorkspace.shared.open(URL(fileURLWithPath: projectID, isDirectory: true))
     }
 
     func restoreFromTrash(id: String) {

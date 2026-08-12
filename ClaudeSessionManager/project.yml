@@ -12,6 +12,15 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGNING_ALLOWED: "YES"
     CODE_SIGNING_REQUIRED: "NO"
+schemes:
+  ClaudeSessionManager:
+    build:
+      targets:
+        ClaudeSessionManager: all
+        ClaudeSessionManagerTests: [test]
+    test:
+      targets:
+        - ClaudeSessionManagerTests
 targets:
   ClaudeSessionManager:
     type: application
@@ -29,7 +38,20 @@ targets:
         ENABLE_HARDENED_RUNTIME: true
         DEAD_CODE_STRIPPING: true
         SWIFT_EMIT_LOC_STRINGS: false
-        MARKETING_VERSION: "0.1.2"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.1.3"
+        CURRENT_PROJECT_VERSION: "4"
         CODE_SIGN_ENTITLEMENTS: ClaudeSessionManager/ClaudeSessionManager.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  ClaudeSessionManagerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ClaudeSessionManagerTests
+    dependencies:
+      - target: ClaudeSessionManager
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.ClaudeSessionManagerTests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Claude会话管理.app/Contents/MacOS/Claude会话管理"
+        BUNDLE_LOADER: "$(TEST_HOST)"
