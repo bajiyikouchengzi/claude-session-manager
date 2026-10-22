@@ -56,12 +56,30 @@ private func audit(_ line: String) {
 
 enum ResumeAction {
     static func command(for session: SessionRecord) -> String {
-        let id = session.cliSessionId ?? session.id
+        let id = shellWord(session.nativeSessionID)
+        let tool: String
+        switch session.provider {
+        case .claude:
+            tool = "claude --resume \(id)"
+        case .codex:
+            tool = "codex resume \(id)"
+        case .grok:
+            tool = "grok --resume \(id)"
+        case .opencode:
+            tool = "opencode -s \(id)"
+        }
         if let cwd = session.cwd, !cwd.isEmpty {
             let escaped = cwd.replacingOccurrences(of: "'", with: "'\\''")
-            return "cd '\(escaped)' && claude --resume \(id)"
+            return "cd '\(escaped)' && \(tool)"
         }
-        return "claude --resume \(id)"
+        return tool
+    }
+
+    static func shellWord(_ value: String) -> String {
+        if value.range(of: #"^[A-Za-z0-9._:-]+$"#, options: .regularExpression) != nil {
+            return value
+        }
+        return "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     static func copyCommand(for session: SessionRecord) {
@@ -75,6 +93,7 @@ enum ResumeAction {
         var urls: [URL] = []
         if let t = session.transcriptURL { urls.append(t) }
         if let m = session.metaURL { urls.append(m) }
+        if let container = session.containerURL { urls.append(container) }
         if urls.isEmpty {
             if let cwd = session.cwd {
                 NSWorkspace.shared.open(URL(fileURLWithPath: cwd))

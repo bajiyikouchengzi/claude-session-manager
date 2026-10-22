@@ -12,6 +12,15 @@ struct AppSettings: Codable, Equatable {
     var fullTextMaxBytesPerSession: Int
     var launchAtLogin: Bool
     var showDockIconWhenMainWindowOpen: Bool
+    var scanCodex: Bool
+    var scanGrok: Bool
+    var scanOpenCode: Bool
+    /// Codex home, typically ~/.codex.
+    var codexHome: String
+    /// Grok home, typically ~/.grok.
+    var grokHome: String
+    /// OpenCode sqlite database.
+    var openCodeDatabase: String
 
     /// Backward-compatible key used in early builds.
     private var claude3pSupportDir: String? = nil
@@ -22,6 +31,9 @@ struct AppSettings: Codable, Equatable {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let code = (home as NSString).appendingPathComponent(".claude")
         let desktop = PathDetector.preferredDesktopSupportDir()
+        let codex = (home as NSString).appendingPathComponent(".codex")
+        let grok = (home as NSString).appendingPathComponent(".grok")
+        let openCode = (home as NSString).appendingPathComponent(".local/share/opencode/opencode.db")
         return AppSettings(
             claudeConfigDir: PathDetector.abbreviate(code),
             claudeDesktopSupportDir: PathDetector.abbreviate(desktop),
@@ -30,8 +42,26 @@ struct AppSettings: Codable, Equatable {
             enableFullTextSearch: true,
             fullTextMaxBytesPerSession: 2_000_000,
             launchAtLogin: false,
-            showDockIconWhenMainWindowOpen: true
+            showDockIconWhenMainWindowOpen: true,
+            scanCodex: true,
+            scanGrok: true,
+            scanOpenCode: true,
+            codexHome: PathDetector.abbreviate(codex),
+            grokHome: PathDetector.abbreviate(grok),
+            openCodeDatabase: PathDetector.abbreviate(openCode)
         )
+    }
+
+    var codexHomeURL: URL {
+        URL(fileURLWithPath: PathDetector.expand(codexHome), isDirectory: true)
+    }
+
+    var grokHomeURL: URL {
+        URL(fileURLWithPath: PathDetector.expand(grokHome), isDirectory: true)
+    }
+
+    var openCodeDatabaseURL: URL {
+        URL(fileURLWithPath: PathDetector.expand(openCodeDatabase))
     }
 
     var projectsDir: URL {
@@ -73,6 +103,12 @@ struct AppSettings: Codable, Equatable {
         case fullTextMaxBytesPerSession
         case launchAtLogin
         case showDockIconWhenMainWindowOpen
+        case scanCodex
+        case scanGrok
+        case scanOpenCode
+        case codexHome
+        case grokHome
+        case openCodeDatabase
     }
 
     init(
@@ -83,7 +119,13 @@ struct AppSettings: Codable, Equatable {
         enableFullTextSearch: Bool,
         fullTextMaxBytesPerSession: Int,
         launchAtLogin: Bool,
-        showDockIconWhenMainWindowOpen: Bool
+        showDockIconWhenMainWindowOpen: Bool,
+        scanCodex: Bool,
+        scanGrok: Bool,
+        scanOpenCode: Bool,
+        codexHome: String,
+        grokHome: String,
+        openCodeDatabase: String
     ) {
         self.claudeConfigDir = claudeConfigDir
         self.claudeDesktopSupportDir = claudeDesktopSupportDir
@@ -93,6 +135,12 @@ struct AppSettings: Codable, Equatable {
         self.fullTextMaxBytesPerSession = fullTextMaxBytesPerSession
         self.launchAtLogin = launchAtLogin
         self.showDockIconWhenMainWindowOpen = showDockIconWhenMainWindowOpen
+        self.scanCodex = scanCodex
+        self.scanGrok = scanGrok
+        self.scanOpenCode = scanOpenCode
+        self.codexHome = codexHome
+        self.grokHome = grokHome
+        self.openCodeDatabase = openCodeDatabase
     }
 
     init(from decoder: Decoder) throws {
@@ -112,6 +160,13 @@ struct AppSettings: Codable, Equatable {
         fullTextMaxBytesPerSession = try c.decodeIfPresent(Int.self, forKey: .fullTextMaxBytesPerSession) ?? 2_000_000
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         showDockIconWhenMainWindowOpen = try c.decodeIfPresent(Bool.self, forKey: .showDockIconWhenMainWindowOpen) ?? true
+        let detected = AppSettings.detectDefaults()
+        scanCodex = try c.decodeIfPresent(Bool.self, forKey: .scanCodex) ?? detected.scanCodex
+        scanGrok = try c.decodeIfPresent(Bool.self, forKey: .scanGrok) ?? detected.scanGrok
+        scanOpenCode = try c.decodeIfPresent(Bool.self, forKey: .scanOpenCode) ?? detected.scanOpenCode
+        codexHome = try c.decodeIfPresent(String.self, forKey: .codexHome) ?? detected.codexHome
+        grokHome = try c.decodeIfPresent(String.self, forKey: .grokHome) ?? detected.grokHome
+        openCodeDatabase = try c.decodeIfPresent(String.self, forKey: .openCodeDatabase) ?? detected.openCodeDatabase
     }
 
     func encode(to encoder: Encoder) throws {
@@ -124,6 +179,12 @@ struct AppSettings: Codable, Equatable {
         try c.encode(fullTextMaxBytesPerSession, forKey: .fullTextMaxBytesPerSession)
         try c.encode(launchAtLogin, forKey: .launchAtLogin)
         try c.encode(showDockIconWhenMainWindowOpen, forKey: .showDockIconWhenMainWindowOpen)
+        try c.encode(scanCodex, forKey: .scanCodex)
+        try c.encode(scanGrok, forKey: .scanGrok)
+        try c.encode(scanOpenCode, forKey: .scanOpenCode)
+        try c.encode(codexHome, forKey: .codexHome)
+        try c.encode(grokHome, forKey: .grokHome)
+        try c.encode(openCodeDatabase, forKey: .openCodeDatabase)
     }
 }
 
@@ -178,6 +239,24 @@ enum PathDetector {
                          ? "✓ Desktop sessions: \(abbreviate(sessions.path))"
                          : "· 无 sessions: \(abbreviate(sessions.path))")
         }
+        if settings.scanCodex {
+            let sessions = settings.codexHomeURL.appendingPathComponent("sessions").path
+            lines.append(FileManager.default.fileExists(atPath: sessions)
+                         ? "✓ Codex sessions: \(abbreviate(sessions))"
+                         : "· 未找到 Codex sessions: \(abbreviate(sessions))")
+        }
+        if settings.scanGrok {
+            let sessions = settings.grokHomeURL.appendingPathComponent("sessions").path
+            lines.append(FileManager.default.fileExists(atPath: sessions)
+                         ? "✓ Grok sessions: \(abbreviate(sessions))"
+                         : "· 未找到 Grok sessions: \(abbreviate(sessions))")
+        }
+        if settings.scanOpenCode {
+            let database = settings.openCodeDatabaseURL.path
+            lines.append(FileManager.default.fileExists(atPath: database)
+                         ? "✓ OpenCode 数据库: \(abbreviate(database))"
+                         : "· 未找到 OpenCode 数据库: \(abbreviate(database))")
+        }
         return lines
     }
 }
@@ -185,6 +264,7 @@ enum PathDetector {
 enum AppPaths {
     static var supportRoot: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Keep the original folder so existing indexes, overlays, and trash survive the rename.
         let dir = base.appendingPathComponent("ClaudeSessionManager", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -234,5 +314,11 @@ final class SettingsStore: ObservableObject {
         settings.claudeConfigDir = detected.claudeConfigDir
         settings.claudeDesktopSupportDir = detected.claudeDesktopSupportDir
         settings.scanBothDesktopVariants = true
+        settings.scanCodex = true
+        settings.scanGrok = true
+        settings.scanOpenCode = true
+        settings.codexHome = detected.codexHome
+        settings.grokHome = detected.grokHome
+        settings.openCodeDatabase = detected.openCodeDatabase
     }
 }

@@ -25,6 +25,9 @@ final class TrashService: @unchecked Sendable {
     func moveToTrash(_ session: SessionRecord) throws -> TrashedSession {
         try queue.sync {
             let fm = FileManager.default
+            guard session.provider.canEditSource else {
+                throw TrashError.readOnlyProvider(session.provider.label)
+            }
             guard !items.contains(where: { $0.id == session.id }) else {
                 throw TrashError.alreadyTrashed
             }
@@ -280,6 +283,7 @@ enum TrashError: LocalizedError {
     case markerCreationFailed(String)
     case restoreConflict(String)
     case missingBackup(String)
+    case readOnlyProvider(String)
 
     var errorDescription: String? {
         switch self {
@@ -301,6 +305,8 @@ enum TrashError: LocalizedError {
             return "恢复目标已存在，为避免覆盖已停止恢复：\(path)"
         case let .missingBackup(path):
             return "回收站备份不完整，缺少：\(path)"
+        case let .readOnlyProvider(name):
+            return "\(name) 会话是只读的，不能移入回收站"
         }
     }
 }

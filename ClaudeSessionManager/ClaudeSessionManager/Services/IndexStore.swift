@@ -56,6 +56,26 @@ final class IndexStore: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_sessions_activity ON sessions(last_activity_at DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
         """)
+        if !hasColumn("provider") {
+            exec("ALTER TABLE sessions ADD COLUMN provider TEXT")
+        }
+        if !hasColumn("container_path") {
+            exec("ALTER TABLE sessions ADD COLUMN container_path TEXT")
+        }
+    }
+
+    private func hasColumn(_ name: String) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(sessions)", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let cString = sqlite3_column_text(statement, 1), String(cString: cString) == name {
+                return true
+            }
+        }
+        return false
     }
 
     func replaceAll(_ sessions: [SessionRecord], bodyByID: [String: String]) {
@@ -90,7 +110,15 @@ final class IndexStore: @unchecked Sendable {
     func allSessions() -> [SessionRecord] {
         queue.sync {
             var result: [SessionRecord] = []
-            let sql = "SELECT * FROM sessions ORDER BY COALESCE(last_activity_at, created_at, 0) DESC"
+            let sql = """
+            SELECT id, source, title, cwd, project_name, model, effort,
+                   created_at, last_activity_at, byte_size, message_count, completed_turns,
+                   is_archived, git_branch, desktop_session_id, cli_session_id,
+                   meta_path, transcript_path, parse_error, title_source,
+                   provider, container_path
+            FROM sessions
+            ORDER BY COALESCE(last_activity_at, created_at, 0) DESC
+            """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
@@ -145,7 +173,8 @@ final class IndexStore: @unchecked Sendable {
           id, source, title, cwd, project_name, model, effort,
           created_at, last_activity_at, byte_size, message_count, completed_turns,
           is_archived, git_branch, desktop_session_id, cli_session_id,
-          meta_path, transcript_path, parse_error, title_source
+          meta_path, transcript_path, parse_error, title_source,
+          provider, container_path
         ) VALUES (
           \(sqlString(s.id)),
           \(sqlString(s.source.rawValue)),
@@ -166,7 +195,9 @@ final class IndexStore: @unchecked Sendable {
           \(sqlString(s.metaURL?.path)),
           \(sqlString(s.transcriptURL?.path)),
           \(sqlString(s.parseError)),
-          \(sqlString(s.titleSource))
+          \(sqlString(s.titleSource)),
+          \(sqlString(s.provider.rawValue)),
+          \(sqlString(s.containerURL?.path))
         );
         INSERT INTO sessions_fts (id, title, cwd, body) VALUES (
           \(sqlString(s.id)),
@@ -211,8 +242,10 @@ final class IndexStore: @unchecked Sendable {
 
         guard let id = text(0) else { return nil }
         let source = SessionSource(rawValue: text(1) ?? "") ?? .codeJsonl
+        let provider = SessionProvider(rawValue: text(20) ?? "") ?? .claude
         return SessionRecord(
             id: id,
+            provider: provider,
             source: source,
             title: text(2) ?? "",
             cwd: text(3),
@@ -233,7 +266,8 @@ final class IndexStore: @unchecked Sendable {
             metaURL: text(16).map { URL(fileURLWithPath: $0) },
             transcriptURL: text(17).map { URL(fileURLWithPath: $0) },
             parseError: text(18),
-            titleSource: text(19)
+            titleSource: text(19),
+            containerURL: text(21).map { URL(fileURLWithPath: $0) }
         )
     }
 

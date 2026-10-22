@@ -37,7 +37,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
 enum ExportService {
     static func export(_ session: SessionRecord, format: ExportFormat, to directory: URL) throws -> URL {
         let safeTitle = sanitizeFilename(session.displayTitle)
-        let base = "\(safeTitle)-\(session.id.prefix(8))"
+        let base = "\(safeTitle)-\(sanitizeFilename(String(session.nativeSessionID.prefix(8))))"
         switch format {
         case .markdown:
             let url = directory.appendingPathComponent("\(base).md")
@@ -64,7 +64,7 @@ enum ExportService {
         var urls: [URL] = []
         if format == .zipBundle && sessions.count > 1 {
             // One zip containing all.
-            let url = directory.appendingPathComponent("claude-sessions-\(dateStamp()).zip")
+            let url = directory.appendingPathComponent("sessions-\(dateStamp()).zip")
             try writeMultiZip(sessions, to: url)
             return [url]
         }
@@ -87,44 +87,21 @@ enum ExportService {
         if let created = session.createdAt { lines.append("- Created: \(formatDate(created))") }
         if let activity = session.lastActivityAt { lines.append("- Last activity: \(formatDate(activity))") }
         lines.append("- Size: \(session.formattedSize)")
-        lines.append("- Source: \(session.source.label)")
+        lines.append("- Source: \(session.provider.label) / \(session.originLabel)")
         lines.append("")
         lines.append("---")
         lines.append("")
-
-        guard let transcript = session.transcriptURL,
-              let handle = try? FileHandle(forReadingFrom: transcript),
-              let data = try? {
-                  defer { try? handle.close() }
-                  // Cap export body for safety (50MB)
-                  return handle.readData(ofLength: 50 * 1024 * 1024)
-              }(),
-              let text = String(data: data, encoding: .utf8) else {
+        let turns = TranscriptText.turns(for: session, maxBytes: 50 * 1024 * 1024)
+            .filter { $0.role == "user" || $0.role == "assistant" }
+        if turns.isEmpty {
             lines.append("_无 transcript 或无法读取。_")
             return lines.joined(separator: "\n")
         }
-
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let lineData = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                continue
-            }
-            let type = obj["type"] as? String
-            if type == "user" {
-                if let content = messageText(obj) {
-                    lines.append("## User")
-                    lines.append("")
-                    lines.append(content)
-                    lines.append("")
-                }
-            } else if type == "assistant" {
-                if let content = messageText(obj) {
-                    lines.append("## Assistant")
-                    lines.append("")
-                    lines.append(content)
-                    lines.append("")
-                }
-            }
+        for turn in turns {
+            lines.append("## \(turn.role == "user" ? "User" : "Assistant")")
+            lines.append("")
+            lines.append(turn.text)
+            lines.append("")
         }
         return lines.joined(separator: "\n")
     }
@@ -134,6 +111,7 @@ enum ExportService {
             "id": session.id,
             "title": session.displayTitle,
             "source": session.source.rawValue,
+            "provider": session.provider.rawValue,
             "byteSize": session.byteSize,
             "isArchived": session.isArchived
         ]
@@ -143,23 +121,10 @@ enum ExportService {
         if let activity = session.lastActivityAt { meta["lastActivityAt"] = ISO8601DateFormatter().string(from: activity) }
 
         var messages: [[String: Any]] = []
-        if let transcript = session.transcriptURL,
-           let handle = try? FileHandle(forReadingFrom: transcript) {
-            defer { try? handle.close() }
-            let data = handle.readData(ofLength: 50 * 1024 * 1024)
-            if let text = String(data: data, encoding: .utf8) {
-                for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                    if let lineData = line.data(using: .utf8),
-                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                       let type = obj["type"] as? String,
-                       type == "user" || type == "assistant",
-                       let content = messageText(obj) {
-                        var row: [String: Any] = ["role": type, "content": content]
-                        if let ts = obj["timestamp"] { row["timestamp"] = ts }
-                        messages.append(row)
-                    }
-                }
-            }
+        for turn in TranscriptText.turns(for: session, maxBytes: 50 * 1024 * 1024) where turn.role == "user" || turn.role == "assistant" {
+            var row: [String: Any] = ["role": turn.role, "content": turn.text]
+            if let timestamp = turn.timestamp { row["timestamp"] = timestamp }
+            messages.append(row)
         }
         return ["meta": meta, "messages": messages]
     }
@@ -188,7 +153,10 @@ enum ExportService {
         defer { try? fm.removeItem(at: tmp) }
 
         for session in sessions {
-            let folder = tmp.appendingPathComponent(sanitizeFilename(session.displayTitle) + "-" + String(session.id.prefix(8)), isDirectory: true)
+            let folder = tmp.appendingPathComponent(
+                sanitizeFilename(session.displayTitle) + "-" + sanitizeFilename(String(session.nativeSessionID.prefix(8))),
+                isDirectory: true
+            )
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             let md = renderMarkdown(session)
             try md.write(to: folder.appendingPathComponent("transcript.md"), atomically: true, encoding: .utf8)
@@ -218,32 +186,6 @@ enum ExportService {
             let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "zip failed"
             throw ExportError.failed(msg)
         }
-    }
-
-    private static func messageText(_ obj: [String: Any]) -> String? {
-        if let message = obj["message"] as? [String: Any] {
-            return contentToString(message["content"])
-        }
-        return contentToString(obj["content"])
-    }
-
-    private static func contentToString(_ content: Any?) -> String? {
-        if let s = content as? String {
-            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? nil : t
-        }
-        if let arr = content as? [Any] {
-            var parts: [String] = []
-            for item in arr {
-                guard let dict = item as? [String: Any] else { continue }
-                if (dict["type"] as? String) == "text", let t = dict["text"] as? String {
-                    parts.append(t)
-                }
-            }
-            let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return joined.isEmpty ? nil : joined
-        }
-        return nil
     }
 
     private static func sanitizeFilename(_ name: String) -> String {

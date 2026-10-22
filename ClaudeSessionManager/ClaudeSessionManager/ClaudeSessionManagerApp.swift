@@ -14,7 +14,7 @@ struct ClaudeSessionManagerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Claude会话管理") {
+        WindowGroup("会话管家") {
             MainWindowView()
                 .environmentObject(appState)
                 .environmentObject(settingsStore)
@@ -46,7 +46,7 @@ struct ClaudeSessionManagerApp: App {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(settingsStore)
-                .frame(width: 560, height: 480)
+                .frame(width: 640, height: 720)
         }
     }
 }

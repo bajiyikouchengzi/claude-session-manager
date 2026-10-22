@@ -11,19 +11,19 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Claude会话管理</string>
+	<string>会话管家</string>
 	<key>CFBundleDisplayName</key>
-	<string>Claude会话管理</string>
+	<string>会话管家</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.3</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026. Claude会话管理 — lightweight local Claude session manager for macOS.</string>
+	<string>Copyright © 2026. 会话管家 — local coding-agent session manager for macOS.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>CFBundleIconName</key>

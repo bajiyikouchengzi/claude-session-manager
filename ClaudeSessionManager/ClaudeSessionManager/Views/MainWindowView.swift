@@ -96,9 +96,10 @@ struct MainWindowView: View {
             }
         } message: {
             if let project = pendingProject {
-                let count = appState.sessionCount(inProject: project.id)
-                let size = appState.byteSize(inProject: project.id)
-                Text("项目「\(project.name)」共 \(count) 个会话（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）。\(projectActiveCount > 0 ? "其中 \(projectActiveCount) 个最近仍有活动，默认会跳过。" : "")只处理 \(PathDetector.abbreviate(project.path)) 下的会话，不会删除项目源码。")
+                let editable = appState.editableSessions(inProject: project.id)
+                let count = editable.count
+                let size = editable.reduce(Int64(0)) { $0 + $1.byteSize }
+                Text("项目「\(project.name)」有 \(count) 个 Claude 会话可删除（约 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）。\(projectActiveCount > 0 ? "其中 \(projectActiveCount) 个最近仍有活动，默认会跳过。" : "")Codex、Grok、OpenCode 会话保持只读。只处理 \(PathDetector.abbreviate(project.path)) 下的会话，不会删除项目源码。")
             }
         }
         .confirmationDialog(
@@ -132,7 +133,11 @@ struct MainWindowView: View {
 
     private var projectActiveCount: Int {
         guard let project = pendingProject else { return 0 }
-        return appState.sessions(inProject: project.id).filter(\.isRecentlyActive).count
+        return appState.editableSessions(inProject: project.id).filter(\.isRecentlyActive).count
+    }
+
+    private var selectionCanEdit: Bool {
+        appState.selectedSessions.contains(where: \.canEditSource)
     }
 
     private func activeCount(in ids: [String]) -> Int {
@@ -155,6 +160,21 @@ struct MainWindowView: View {
                         if f == .trash {
                             appState.projectFilter = nil
                         }
+                    }
+                }
+            }
+
+            Section("来源") {
+                ForEach(ProviderFilter.allCases) { item in
+                    let count = item.provider.map { appState.sessionCount(provider: $0) } ?? appState.sessions.count
+                    sidebarRow(
+                        title: item.label,
+                        systemImage: icon(for: item),
+                        selected: appState.providerFilter == item && appState.filter != .trash,
+                        trailing: "\(count)"
+                    ) {
+                        appState.providerFilter = item
+                        if appState.filter == .trash { appState.filter = .all }
                     }
                 }
             }
@@ -192,9 +212,11 @@ struct MainWindowView: View {
     @ViewBuilder
     private func projectContextMenu(for project: ProjectGroup) -> some View {
         let count = appState.sessionCount(inProject: project.id)
-        let size = appState.byteSize(inProject: project.id)
-        let archivedCount = appState.sessions(inProject: project.id).filter(\.isArchived).count
-        let activeCount = count - archivedCount
+        let editable = appState.editableSessions(inProject: project.id)
+        let editableCount = editable.count
+        let editableSize = editable.reduce(Int64(0)) { $0 + $1.byteSize }
+        let archivedCount = editable.filter(\.isArchived).count
+        let activeCount = editableCount - archivedCount
 
         Button("查看该项目会话") {
             appState.projectFilter = project.id
@@ -212,7 +234,7 @@ struct MainWindowView: View {
         .disabled(count == 0)
         Divider()
         if activeCount > 0 {
-            Button("归档该项目全部会话（\(activeCount)）") {
+            Button("归档该项目的 Claude 会话（\(activeCount)）") {
                 appState.setArchived(projectID: project.id, archived: true)
             }
         }
@@ -222,11 +244,11 @@ struct MainWindowView: View {
             }
         }
         Divider()
-        Button("删除该项目全部会话（\(count) · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))）", role: .destructive) {
+        Button("删除该项目的 Claude 会话（\(editableCount) · \(ByteCountFormatter.string(fromByteCount: editableSize, countStyle: .file))）", role: .destructive) {
             pendingProject = project
             confirmProjectTrash = true
         }
-        .disabled(count == 0)
+        .disabled(editableCount == 0)
     }
 
     private func sidebarRow<MenuContent: View>(
@@ -388,10 +410,12 @@ struct MainWindowView: View {
                 Button("Zip 打包") { appState.exportSelection(format: .zipBundle) }
             }
             Button("批量归档") { appState.archiveSelection(archived: true) }
+                .disabled(!selectionCanEdit)
             Button("批量删除", role: .destructive) {
-                pendingTrashIDs = Array(appState.effectiveSelectionIDs)
+                pendingTrashIDs = editableSelectionIDs
                 confirmTrash = true
             }
+            .disabled(!selectionCanEdit)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -463,10 +487,12 @@ struct MainWindowView: View {
                     Button("Zip 打包") { appState.exportSelection(format: .zipBundle) }
                 }
                 Button("批量归档") { appState.archiveSelection(archived: true) }
+                    .disabled(!selectionCanEdit)
                 Button("批量删除", role: .destructive) {
-                    pendingTrashIDs = Array(appState.effectiveSelectionIDs)
+                    pendingTrashIDs = editableSelectionIDs
                     confirmTrash = true
                 }
+                .disabled(!selectionCanEdit)
             }
             .buttonStyle(.bordered)
             List(items) { s in
@@ -512,24 +538,22 @@ struct MainWindowView: View {
             } label: {
                 Label("重命名", systemImage: "pencil")
             }
-            .disabled(appState.selectedSession == nil || appState.effectiveSelectionIDs.count > 1)
+            .disabled(appState.selectedSession?.canEditSource != true || appState.effectiveSelectionIDs.count > 1)
 
             Button {
                 appState.archiveSelection(archived: !(appState.selectedSession?.isArchived ?? false))
             } label: {
                 Label("归档", systemImage: "archivebox")
             }
-            .disabled(appState.effectiveSelectionIDs.isEmpty)
+            .disabled(!selectionCanEdit)
 
             Button(role: .destructive) {
-                let ids = Array(appState.effectiveSelectionIDs)
-                guard !ids.isEmpty else { return }
-                pendingTrashIDs = ids
+                pendingTrashIDs = editableSelectionIDs
                 confirmTrash = true
             } label: {
                 Label("删除", systemImage: "trash")
             }
-            .disabled(appState.effectiveSelectionIDs.isEmpty)
+            .disabled(!selectionCanEdit)
         }
     }
 
@@ -543,30 +567,36 @@ struct MainWindowView: View {
         Button("导出 JSON…") { appState.export(sessions: [session], format: .json) }
         Button("导出 Zip…") { appState.export(sessions: [session], format: .zipBundle) }
         Divider()
-        Button(session.isArchived ? "取消归档" : "归档") {
-            appState.setArchived(sessionID: session.id, archived: !session.isArchived)
-        }
         Button(session.isFavorite ? "取消收藏" : "收藏") {
             appState.toggleFavorite(sessionID: session.id)
         }
-        Button("重命名…") {
-            appState.selectOnly(session.id)
-            renameText = session.displayTitle
-            showRename = true
-        }
-        Divider()
-        if appState.effectiveSelectionIDs.count > 1 {
-            Button("删除选中 \(appState.effectiveSelectionIDs.count) 项", role: .destructive) {
-                pendingTrashIDs = Array(appState.effectiveSelectionIDs)
-                confirmTrash = true
+        if session.canEditSource {
+            Button(session.isArchived ? "取消归档" : "归档") {
+                appState.setArchived(sessionID: session.id, archived: !session.isArchived)
             }
-            Button("导出选中 Zip…") { appState.exportSelection(format: .zipBundle) }
-        } else {
-            Button("移入回收站", role: .destructive) {
-                pendingTrashIDs = [session.id]
-                confirmTrash = true
+            Button("重命名…") {
+                appState.selectOnly(session.id)
+                renameText = session.displayTitle
+                showRename = true
+            }
+            Divider()
+            if appState.effectiveSelectionIDs.count > 1 {
+                Button("删除选中的 Claude 会话", role: .destructive) {
+                    pendingTrashIDs = editableSelectionIDs
+                    confirmTrash = true
+                }
+                Button("导出选中 Zip…") { appState.exportSelection(format: .zipBundle) }
+            } else {
+                Button("移入回收站", role: .destructive) {
+                    pendingTrashIDs = [session.id]
+                    confirmTrash = true
+                }
             }
         }
+    }
+
+    private var editableSelectionIDs: [String] {
+        appState.selectedSessions.filter(\.canEditSource).map(\.id)
     }
 
     private func icon(for filter: SessionFilter) -> String {
@@ -576,6 +606,16 @@ struct MainWindowView: View {
         case .archived: return "archivebox"
         case .large: return "externaldrive"
         case .trash: return "trash"
+        }
+    }
+
+    private func icon(for filter: ProviderFilter) -> String {
+        switch filter {
+        case .all: return "square.stack"
+        case .claude: return "bubble.left.and.bubble.right"
+        case .codex: return "terminal"
+        case .grok: return "sparkles"
+        case .opencode: return "shippingbox"
         }
     }
 }
@@ -612,7 +652,7 @@ struct SessionRowView: View {
                 }
 
                 HStack(spacing: 8) {
-                    badge(session.source.label, color: sourceColor.opacity(0.18))
+                    badge(session.originLabel, color: sourceColor.opacity(0.18))
                     if session.isArchived {
                         badge("已归档", color: Color.orange.opacity(0.18))
                     }
@@ -651,10 +691,17 @@ struct SessionRowView: View {
     }
 
     private var sourceColor: Color {
-        switch session.source {
-        case .merged: return .accentColor
-        case .desktopCodeMeta: return .purple
-        case .codeJsonl: return .teal
+        switch session.provider {
+        case .codex: return .orange
+        case .grok: return .blue
+        case .opencode: return .indigo
+        case .claude:
+            switch session.source {
+            case .merged: return .accentColor
+            case .desktopCodeMeta: return .purple
+            case .codeJsonl: return .teal
+            case .external: return .accentColor
+            }
         }
     }
 
@@ -709,13 +756,18 @@ struct SessionDetailView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            if !session.canEditSource {
+                Text("\(session.provider.label) 会话只读。可以搜索、预览、导出，以及复制恢复命令。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
     private var metaGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-            row("ID", session.id)
-            row("来源", session.source.label)
+            row("会话 ID", session.nativeSessionID)
+            row("来源", session.originLabel)
             if let model = session.model { row("模型", model) }
             if let effort = session.effort { row("Effort", effort) }
             if let branch = session.gitBranch { row("分支", branch) }
@@ -731,6 +783,9 @@ struct SessionDetailView: View {
             row("归档", session.isArchived ? "是" : "否")
             if let meta = session.metaURL { row("元数据", meta.path) }
             if let t = session.transcriptURL { row("Transcript", t.path) }
+            if let container = session.containerURL {
+                row(session.provider == .opencode ? "数据库" : "容器", container.path)
+            }
             if let err = session.parseError { row("解析警告", err) }
         }
         .font(.callout)
@@ -796,57 +851,17 @@ struct SessionDetailView: View {
     private func loadPreview() {
         isLoadingPreview = true
         previewLines = []
-        let url = session.transcriptURL
+        let session = session
         Task.detached(priority: .utility) {
-            let lines = Self.readPreview(url: url, limit: 12)
+            let turns = TranscriptText.previewTurns(for: session, limit: 12)
+            let lines = turns.enumerated().map { index, turn in
+                PreviewLine(id: index, role: turn.role, text: turn.text)
+            }
             await MainActor.run {
                 self.previewLines = lines
                 self.isLoadingPreview = false
             }
         }
-    }
-
-    private static func readPreview(url: URL?, limit: Int) -> [PreviewLine] {
-        guard let url,
-              let handle = try? FileHandle(forReadingFrom: url) else { return [] }
-        defer { try? handle.close() }
-        let data = handle.readData(ofLength: 1024 * 1024)
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-        var out: [PreviewLine] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let type = obj["type"] as? String,
-                  type == "user" || type == "assistant" else { continue }
-            let content: String?
-            if let message = obj["message"] as? [String: Any] {
-                content = contentToString(message["content"])
-            } else {
-                content = contentToString(obj["content"])
-            }
-            guard var c = content?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty else { continue }
-            if c.hasPrefix("Base directory for this skill") { continue }
-            if c.count > 600 { c = String(c.prefix(600)) + "…" }
-            out.append(PreviewLine(id: out.count, role: type, text: c))
-            if out.count >= limit { break }
-        }
-        return out
-    }
-
-    private static func contentToString(_ content: Any?) -> String? {
-        if let s = content as? String { return s }
-        if let arr = content as? [Any] {
-            var parts: [String] = []
-            for item in arr {
-                guard let dict = item as? [String: Any] else { continue }
-                if (dict["type"] as? String) == "text", let t = dict["text"] as? String {
-                    parts.append(t)
-                }
-            }
-            let j = parts.joined(separator: "\n")
-            return j.isEmpty ? nil : j
-        }
-        return nil
     }
 }
 

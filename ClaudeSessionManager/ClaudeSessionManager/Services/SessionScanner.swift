@@ -132,19 +132,39 @@ enum SessionScanner {
             }
         }
 
-        var sessions = Array(byCLI.values) + orphans
+        progress?(ScanProgress(phase: "扫描 Codex、Grok、OpenCode", current: 0, total: 0))
+        let foreign = ForeignSessionScanner.load(
+            settings: settings,
+            includeBodies: includeBodies,
+            maxBodyBytes: settings.fullTextMaxBytesPerSession
+        )
+        errors.append(contentsOf: foreign.errors)
+
+        var sessions = Array(byCLI.values) + orphans + foreign.sessions
         sessions.sort { ($0.lastActivityAt ?? .distantPast) > ($1.lastActivityAt ?? .distantPast) }
 
-        var bodyByID: [String: String] = [:]
+        var bodyByID: [String: String] = foreign.bodies
         if includeBodies {
             let total = sessions.count
             for (idx, s) in sessions.enumerated() {
                 progress?(ScanProgress(phase: "建立全文索引", current: idx + 1, total: total))
-                guard let url = s.transcriptURL else { continue }
-                bodyByID[s.id] = extractSearchableBody(
-                    from: url,
-                    maxBytes: settings.fullTextMaxBytesPerSession
-                )
+                if bodyByID[s.id] != nil { continue }
+                switch s.provider {
+                case .claude:
+                    guard let url = s.transcriptURL else { continue }
+                    bodyByID[s.id] = extractSearchableBody(
+                        from: url,
+                        maxBytes: settings.fullTextMaxBytesPerSession
+                    )
+                case .codex, .grok:
+                    if s.transcriptURL?.path.hasSuffix(".zst") == true { continue }
+                    bodyByID[s.id] = TranscriptText.searchableBody(
+                        for: s,
+                        maxBytes: settings.fullTextMaxBytesPerSession
+                    )
+                case .opencode:
+                    continue
+                }
             }
         }
 
@@ -419,7 +439,17 @@ enum SessionScanner {
         return String(oneLine[..<idx]) + "…"
     }
 
-    private static func millisDate(_ any: Any?) -> Date? {
+    static func millisDate(_ value: Int64?) -> Date? {
+        guard let value else { return nil }
+        let n = Double(value)
+        if n > 10_000_000_000 { return Date(timeIntervalSince1970: n / 1000) }
+        return Date(timeIntervalSince1970: n)
+    }
+
+    static func millisDate(_ any: Any?) -> Date? {
+        if let n = any as? Int64 {
+            return millisDate(Optional(n))
+        }
         if let n = any as? Double {
             // Heuristic: ms vs s
             if n > 10_000_000_000 { return Date(timeIntervalSince1970: n / 1000) }
@@ -436,7 +466,7 @@ enum SessionScanner {
         return nil
     }
 
-    private static func parseTimestamp(_ any: Any?) -> Date? {
+    static func parseTimestamp(_ any: Any?) -> Date? {
         if let s = any as? String {
             let iso = ISO8601DateFormatter()
             iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

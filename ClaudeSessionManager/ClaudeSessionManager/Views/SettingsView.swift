@@ -19,6 +19,24 @@ struct SettingsView: View {
                     pathField(text: $settingsStore.settings.claudeDesktopSupportDir, pick: pickClaudeDesktop)
                 }
                 Toggle("同时扫描 Claude 与 Claude-3p（若都存在）", isOn: $settingsStore.settings.scanBothDesktopVariants)
+            }
+
+            Section("Codex / Grok / OpenCode") {
+                Text("这三处只读。可以搜索、预览、导出和复制恢复命令，不会改标题、归档或删除。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("扫描 Codex", isOn: $settingsStore.settings.scanCodex)
+                LabeledContent("Codex 目录") {
+                    pathField(text: $settingsStore.settings.codexHome, pick: pickCodexHome)
+                }
+                Toggle("扫描 Grok", isOn: $settingsStore.settings.scanGrok)
+                LabeledContent("Grok 目录") {
+                    pathField(text: $settingsStore.settings.grokHome, pick: pickGrokHome)
+                }
+                Toggle("扫描 OpenCode", isOn: $settingsStore.settings.scanOpenCode)
+                LabeledContent("OpenCode 数据库") {
+                    pathField(text: $settingsStore.settings.openCodeDatabase, pick: pickOpenCodeDatabase)
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(PathDetector.existenceSummary(settings: settingsStore.settings), id: \.self) { line in
@@ -59,14 +77,14 @@ struct SettingsView: View {
             }
 
             Section("关于") {
-                LabeledContent("产品", value: "Claude会话管理")
-                LabeledContent("版本", value: "0.1.2")
+                LabeledContent("产品", value: "会话管家")
+                LabeledContent("版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0")
                 LabeledContent("应用数据") {
                     Button("在 Finder 中显示") {
                         NSWorkspace.shared.open(AppPaths.supportRoot)
                     }
                 }
-                Text("Claude会话管理 是非 Anthropic 官方产品，用于整理本机 Claude Desktop / Code 会话。默认不发起网络请求；删除会先进入本应用回收站。")
+                Text("会话管家不是这些工具的官方产品。它整理本机 Claude、Codex、Grok 和 OpenCode 会话。默认不发起网络请求。删除和归档只作用于 Claude，并先进入本应用回收站。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -83,7 +101,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(minWidth: 560, minHeight: 480)
+        .frame(minWidth: 560, minHeight: 640)
     }
 
     private func pathField(text: Binding<String>, pick: @escaping () -> Void) -> some View {
@@ -107,10 +125,37 @@ struct SettingsView: View {
         }
     }
 
+    private func pickCodexHome() {
+        if let url = pickDirectory() {
+            settingsStore.settings.codexHome = PathDetector.abbreviate(url.path)
+        }
+    }
+
+    private func pickGrokHome() {
+        if let url = pickDirectory() {
+            settingsStore.settings.grokHome = PathDetector.abbreviate(url.path)
+        }
+    }
+
+    private func pickOpenCodeDatabase() {
+        if let url = pickFile() {
+            settingsStore.settings.openCodeDatabase = PathDetector.abbreviate(url.path)
+        }
+    }
+
     private func pickDirectory() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func pickFile() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.prompt = "选择"
         return panel.runModal() == .OK ? panel.url : nil

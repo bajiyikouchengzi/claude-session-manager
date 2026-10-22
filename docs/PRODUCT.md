@@ -1,6 +1,6 @@
-# Claude Session Manager（macOS）
+# 会话管家（macOS）
 
-轻量级会话管理工具，面向 Claude Desktop 与 Claude Code。  
+轻量级会话管理工具，面向 Claude、Codex、Grok 与 OpenCode 的本地会话。  
 目标：把侧边栏里越堆越多、难找、难清的会话管起来，而不是再做一个聊天客户端。
 
 > 当前实现版本：v0.1.3。本文同时包含已实现能力与后续规划，版本现状以 README 和勾选清单为准。
@@ -471,9 +471,9 @@ struct SessionRecord: Identifiable, Hashable {
 
 | 项 | 建议 |
 |---|---|
-| 产品名 | **Claude会话管理** |
-| 简称 | Claude会话管理 |
-| Bundle ID | `com.local.ClaudeSessionManager`（可改） |
+| 产品名 | **会话管家** |
+| 简称 | 会话管家 |
+| Bundle ID | `com.local.ClaudeSessionManager`（沿用，避免被系统当成另一个应用） |
 | License | 个人自用优先；若开源建议 MIT |
 | 免责 | 非 Anthropic 官方产品；操作本地文件风险自负；破坏性操作前请备份 |
 
@@ -506,4 +506,4 @@ du -sh ~/Library/Application\ Support/Claude-3p ~/.claude
 - 空状态：`尚未发现会话。请授权访问 Claude-3p 与 ~/.claude 目录。`
 - 删除确认：`将把 N 个会话移入回收站（约 X MB）。可在设置中的保留期内恢复。`
 - 活跃警告：`该会话在 2 分钟内仍有写入，可能正在使用。仍要继续吗？`
-- 菜单栏占位：`Claude会话管理 · N 个会话`
+- 菜单栏占位：`会话管家 · N 个会话`

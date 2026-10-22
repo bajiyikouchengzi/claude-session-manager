@@ -1,5 +1,5 @@
 import XCTest
-@testable import Claude会话管理
+@testable import 会话管家
 
 final class SafetyTests: XCTestCase {
     private var temporaryRoot: URL!

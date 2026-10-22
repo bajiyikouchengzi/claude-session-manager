@@ -12,6 +12,7 @@ final class AppState: ObservableObject {
     @Published var useFullTextSearch: Bool = false
     @Published var sort: SessionSort = .lastActivity
     @Published var filter: SessionFilter = .all
+    @Published var providerFilter: ProviderFilter = .all
     @Published var projectFilter: String? = nil
     @Published var isScanning: Bool = false
     @Published var scanPhase: String = ""
@@ -101,12 +102,31 @@ final class AppState: ObservableObject {
     }
 
     func setArchived(ids: [String], archived: Bool) {
+        var changed = 0
+        var skipped = 0
         for id in ids {
-            setArchived(sessionID: id, archived: archived)
+            if setArchived(sessionID: id, archived: archived, announce: false) {
+                changed += 1
+            } else if sessions.contains(where: { $0.id == id }) {
+                skipped += 1
+            }
         }
-        if ids.count > 1 {
-            statusMessage = archived ? "已归档 \(ids.count) 项" : "已取消归档 \(ids.count) 项"
+        var parts: [String] = []
+        if changed > 0 {
+            parts.append(archived ? "已归档 \(changed) 项" : "已取消归档 \(changed) 项")
         }
+        if skipped > 0 {
+            parts.append("已跳过只读会话 \(skipped) 项")
+        }
+        statusMessage = parts.isEmpty ? "没有可归档的会话" : parts.joined(separator: "；")
+    }
+
+    func sessionCount(provider: SessionProvider) -> Int {
+        sessions.filter { $0.provider == provider }.count
+    }
+
+    func editableSessions(inProject projectID: String) -> [SessionRecord] {
+        sessions(inProject: projectID).filter(\.canEditSource)
     }
 
     var visibleSessions: [SessionRecord] {
@@ -127,6 +147,10 @@ final class AppState: ObservableObject {
 
         if let projectFilter, !projectFilter.isEmpty {
             list = list.filter { $0.projectID == projectFilter }
+        }
+
+        if let provider = providerFilter.provider {
+            list = list.filter { $0.provider == provider }
         }
 
         if let searchIDs {
@@ -204,6 +228,10 @@ final class AppState: ObservableObject {
 
     func rename(sessionID: String, to newTitle: String) {
         guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        guard sessions[idx].canEditSource else {
+            statusMessage = "\(sessions[idx].provider.label) 会话是只读的，不能在这里改标题"
+            return
+        }
         let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         sessions[idx].title = title
@@ -214,13 +242,23 @@ final class AppState: ObservableObject {
         statusMessage = "已重命名"
     }
 
-    func setArchived(sessionID: String, archived: Bool) {
-        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+    @discardableResult
+    func setArchived(sessionID: String, archived: Bool, announce: Bool = true) -> Bool {
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return false }
+        guard sessions[idx].canEditSource else {
+            if announce {
+                statusMessage = "\(sessions[idx].provider.label) 会话是只读的，不能在这里归档"
+            }
+            return false
+        }
         sessions[idx].isArchived = archived
         _ = MetaWriter.updateMeta(at: sessions[idx].metaURL, isArchived: archived)
         overlayStore.update(sessionID) { $0.isArchivedOverride = archived }
         indexStore.upsert(sessions[idx], body: nil)
-        statusMessage = archived ? "已归档" : "已取消归档"
+        if announce {
+            statusMessage = archived ? "已归档" : "已取消归档"
+        }
+        return true
     }
 
     func toggleFavorite(sessionID: String) {
@@ -234,10 +272,15 @@ final class AppState: ObservableObject {
         var freed: Int64 = 0
         var movedCount = 0
         var skippedActive = 0
+        var skippedReadOnly = 0
         var failures: [String] = []
         for id in ids {
             guard let idx = sessions.firstIndex(where: { $0.id == id }) else { continue }
             let session = sessions[idx]
+            if !session.canEditSource {
+                skippedReadOnly += 1
+                continue
+            }
             if session.isRecentlyActive && !allowRecentlyActive {
                 skippedActive += 1
                 continue
@@ -260,6 +303,7 @@ final class AppState: ObservableObject {
             parts.append("已移入回收站 \(movedCount) 项 · 约 \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
         }
         if skippedActive > 0 { parts.append("已跳过活跃会话 \(skippedActive) 项") }
+        if skippedReadOnly > 0 { parts.append("已跳过只读会话 \(skippedReadOnly) 项") }
         if !failures.isEmpty { parts.append("失败 \(failures.count) 项：\(failures.joined(separator: "；"))") }
         statusMessage = parts.isEmpty ? "没有可删除的会话" : parts.joined(separator: "；")
     }
@@ -301,11 +345,11 @@ final class AppState: ObservableObject {
 
     /// Archive / unarchive sessions for one exact normalized project path.
     func setArchived(projectID: String, archived: Bool) {
-        let items = sessions(inProject: projectID)
+        let items = editableSessions(inProject: projectID)
         let ids = items.map(\.id)
-        let name = items.first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
+        let name = sessions(inProject: projectID).first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
         guard !ids.isEmpty else {
-            statusMessage = "项目「\(name)」下没有会话"
+            statusMessage = "项目「\(name)」下没有可归档的 Claude 会话"
             return
         }
         setArchived(ids: ids, archived: archived)
@@ -316,11 +360,11 @@ final class AppState: ObservableObject {
 
     /// Move every session in a project into the app trash.
     func moveProjectToTrash(projectID: String, allowRecentlyActive: Bool = false) {
-        let items = sessions(inProject: projectID)
+        let items = editableSessions(inProject: projectID)
         let ids = items.map(\.id)
-        let name = items.first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
+        let name = sessions(inProject: projectID).first?.projectName ?? URL(fileURLWithPath: projectID).lastPathComponent
         guard !ids.isEmpty else {
-            statusMessage = "项目「\(name)」下没有会话"
+            statusMessage = "项目「\(name)」下没有可删除的 Claude 会话"
             return
         }
         moveToTrash(ids: ids, allowRecentlyActive: allowRecentlyActive)

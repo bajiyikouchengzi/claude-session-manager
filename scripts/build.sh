@@ -23,6 +23,6 @@ xcodebuild \
   -derivedDataPath "$DERIVED" \
   build
 
-APP="$DERIVED/Build/Products/$CONFIG/Claude会话管理.app"
+APP="$DERIVED/Build/Products/$CONFIG/会话管家.app"
 echo "✓ 完成: $APP"
 echo "  运行: open \"$APP\""
